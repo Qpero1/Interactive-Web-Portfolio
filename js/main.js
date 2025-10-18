@@ -1,10 +1,13 @@
 // Import Three.js (ES-module form)
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js';
 
-let scene, camera, renderer;
+let scene, camera, renderer, ground;
 let train;
+let firstStop;
 const keys = {};
 const clock = new THREE.Clock(); 
+const groundDepth = 50;
+const groundWidth = 50;
 
 // ---------------- SETUP ----------------
 function init() {
@@ -29,8 +32,8 @@ function init() {
   scene.add(dir);
 
   // Ground
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(50, 50),
+  ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(groundWidth, groundDepth),
     new THREE.MeshLambertMaterial({ color: 0x228b22 })
   );
   ground.rotation.x = -Math.PI / 2;
@@ -38,6 +41,9 @@ function init() {
 
   // Create your train instance
   train = new Train(0xff0000);
+  firstStop = new POI(10);
+  scene.add(firstStop.mesh);
+
   scene.add(train.mesh);
 
   // Events
@@ -85,6 +91,20 @@ class Train {
 
     // Integrate position
     this.mesh.position.x += this.v * dt;
+    if (this.mesh.position.x > groundWidth / 2) this.mesh.position.x = -groundWidth / 2;
+    if (this.mesh.position.x < -groundWidth / 2) this.mesh.position.x = groundWidth / 2;
+  
+  }
+}
+
+class POI {
+  constructor(trackX) {
+    const bodyGeo = new THREE.BoxGeometry(.8, .8, .8);
+    const color = 0x1d2ba8;
+    const bodyMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.3 });
+    this.mesh = new THREE.Mesh(bodyGeo, bodyMat);
+    this.mesh.position.y = 0.5;
+    this.mesh.position.x = trackX;
   }
 }
 
@@ -94,13 +114,31 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();   // seconds since last frame
   train.update(dt);              // pass dt
-  
-  const camOffset = new THREE.Vector3(0, 10, 10);
-  const targetPos = train.mesh.position.clone().add(camOffset);
-  camera.position.lerp(targetPos, 0.05);
-  camera.lookAt(train.mesh.position);
+
+  // Update camera to follow train
+  updateCam();
 
   renderer.render(scene, camera);
+}
+
+// ---------------- CAMERA ----------------
+function updateCam() {
+  const camOffset = new THREE.Vector3(0, 10, 10);
+  const targetPos = train.mesh.position.clone().add(camOffset);
+
+  // lerp camera only if train is close, otherwise snap to mask teleporting
+  // normalize lerp amount based on distance to edge of groundWidth
+  const distance = camera.position.distanceTo(targetPos);
+
+  const groundHalfWidth = groundWidth / 2;
+  const distanceToEdge = groundHalfWidth - Math.abs(train.mesh.position.x);
+  // lerp amount: .1 when far from edge, smooth to 1 when within affectRange of edge
+  const affectRange = 10;
+  const lerpAmount = distanceToEdge > affectRange ? 0.01 : 0.01 + (1 - 0.01) * Math.pow(1 - (distanceToEdge / affectRange), 4);
+
+
+  camera.position.lerp(targetPos, lerpAmount);
+  camera.lookAt(train.mesh.position);
 }
 
 // ---------------- RESIZE ----------------
