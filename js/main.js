@@ -3,11 +3,11 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.m
 
 let scene, camera, renderer, ground;
 let train;
-let firstStop;
 const keys = {};
 const clock = new THREE.Clock(); 
 const groundDepth = 50;
 const groundWidth = 50;
+let poiList = [];
 
 // ---------------- SETUP ----------------
 function init() {
@@ -34,16 +34,26 @@ function init() {
   // Ground
   ground = new THREE.Mesh(
     new THREE.PlaneGeometry(groundWidth, groundDepth),
-    new THREE.MeshLambertMaterial({ color: 0x228b22 })
+    new THREE.MeshLambertMaterial({ color: 0xffd24d })
   );
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
 
   // Create your train instance
   train = new Train(0xff0000);
-  firstStop = new POI(10);
-  scene.add(firstStop.mesh);
 
+  // Create some POIs
+  const firstStop = new POI(10, "First Stop");
+  const secondStop = new POI(0, "Second Stop");
+  
+  // Add to POI list
+  poiList.push(firstStop);
+  poiList.push(secondStop);
+
+
+  // Add objects to scene
+  scene.add(secondStop.mesh);
+  scene.add(firstStop.mesh);
   scene.add(train.mesh);
 
   // Events
@@ -51,10 +61,11 @@ function init() {
   addEventListener('keydown', e => keys[e.code] = true);
   addEventListener('keyup', e => keys[e.code] = false);
 
+  createHUD();
   animate();
 }
 
-// ---------------- CLASS ----------------
+// ---------------- CLASSES ----------------
 class Train {
   constructor(color) {
     const bodyGeo = new THREE.BoxGeometry(2, 1, 1);
@@ -98,28 +109,102 @@ class Train {
 }
 
 class POI {
-  constructor(trackX) {
+  constructor(trackX, name) {
     const bodyGeo = new THREE.BoxGeometry(.8, .8, .8);
-    const color = 0x1d2ba8;
-    const bodyMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.3 });
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1d2ba8, transparent: true, opacity: 0.3 });
     this.mesh = new THREE.Mesh(bodyGeo, bodyMat);
-    this.mesh.position.y = 0.5;
-    this.mesh.position.x = trackX;
+    this.mesh.position.set(trackX, 0.5, 0);
+    this.name = name;
+
+    // attach a building and remember it
+    this.building = new Building(trackX, -5, 3, 3, 5, 0x8B4513);
+    scene.add(this.building.mesh);
+
+    // trigger control
+    this._wasInside = false;
+    this.radius = .8;
+    this.cooldown = 0;  // seconds until we can pop again
+  }
+
+  update(trainX, dt) {
+    const dist = Math.abs(this.mesh.position.x - trainX);
+    const inside = dist < this.radius;
+
+    // cool down timer
+    if (this.cooldown > 0) this.cooldown -= dt;
+
+    // rising edge trigger
+    if (inside && !this._wasInside && this.cooldown <= 0) {
+      this.building.pop();
+      this.cooldown = 0.5; // prevent machine-gunning the effect
+    }
+
+    this._wasInside = inside;
+
+    // advance the building animation
+    this.building.update(dt);
   }
 }
+
+
+// Class to create buildings for POIs
+class Building {
+  constructor(x, z, width, depth, height, color) {
+    const geo = new THREE.BoxGeometry(width, height, depth);
+    const mat = new THREE.MeshStandardMaterial({ color });
+    this.mesh = new THREE.Mesh(geo, mat);
+    this.mesh.position.set(x, height / 2, z);
+
+    // pop animation state
+    this.popT = 1;          // 0 -> anim just started, >=1 -> idle
+    this.popDur = .67;     // seconds
+    this.popAmp = .1;     // how big the first overshoot is (scale 1 + amp)
+    this.popDamp = 2;     // higher = dies out faster
+    this.popFreq = 1;     // oscillations per second
+  }
+
+  pop() {
+    this.popT = 0;
+  }
+
+  update(dt) {
+    if (this.popT < 1) {
+      this.popT += dt / this.popDur;
+      const t = this.popT;
+
+      // springy scale: 1 + A * e^(-damp*t) * sin(2π f t)
+      const s = 1 + this.popAmp * Math.exp(-this.popDamp * t) * Math.sin(2 * Math.PI * this.popFreq * t);
+      this.mesh.scale.setScalar(s);
+
+      // stop and reset cleanly near the end
+      if (t >= 1) {
+        this.mesh.scale.set(1, 1, 1);
+        this.popT = 1;
+      }
+    }
+  }
+}
+
 
 
 // ---------------- LOOP ----------------
 function animate() {
   requestAnimationFrame(animate);
-  const dt = clock.getDelta();   // seconds since last frame
-  train.update(dt);              // pass dt
+  const dt = clock.getDelta();
 
-  // Update camera to follow train
+  train.update(dt);
+
+  // update all POIs (this advances building pops)
+  for (const poi of poiList) {
+    poi.update(train.mesh.position.x, dt);
+  }
+
+  updateHUD(train.mesh.position.x);
   updateCam();
-
   renderer.render(scene, camera);
 }
+
+
 
 // ---------------- CAMERA ----------------
 function updateCam() {
@@ -128,7 +213,7 @@ function updateCam() {
 
   // lerp camera only if train is close, otherwise snap to mask teleporting
   // normalize lerp amount based on distance to edge of groundWidth
-  const distance = camera.position.distanceTo(targetPos);
+  // const distance = camera.position.distanceTo(targetPos);
 
   const groundHalfWidth = groundWidth / 2;
   const distanceToEdge = groundHalfWidth - Math.abs(train.mesh.position.x);
@@ -148,9 +233,36 @@ function onResize() {
   renderer.setSize(innerWidth, innerHeight);
 }
 
-// ---------------- START ----------------
-init();
+// --- HUD: one bottom banner ---
+let hudEl;
 
+function createHUD() {
+  hudEl = document.createElement('div');
+  hudEl.id = 'poiHUD';
+  document.body.appendChild(hudEl);
+}
+
+function updateHUD(trainX) {
+  let closest = null;
+  let closestDist = Infinity;
+  for (const poi of poiList) {
+    const d = Math.abs(poi.mesh.position.x - trainX);
+    if (d < closestDist) { closestDist = d; closest = poi; }
+  }
+
+  const threshold = 2.5;
+  if (closestDist < threshold) {
+    hudEl.textContent = closest.name;
+    hudEl.classList.add('visible');
+
+  } else {
+    hudEl.classList.remove('visible');
+  }
+}
+
+
+// start
+init();
 
 
 // Helpers
