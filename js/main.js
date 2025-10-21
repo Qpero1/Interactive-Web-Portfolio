@@ -11,6 +11,9 @@ let poiList = [];
 
 let controlsEnabled = true;     // lock/unlock player input
 let currentHUDText = '';        // stores the label text while panel is open
+let hudRestoreUntil = 0;        // ms timestamp; while in future, HUD updates are ignored
+let hudPresent = false;   // do we currently have a bottom HUD in the DOM?
+
 
 // panel animation handles
 let panelCurtainAnim = null;
@@ -133,7 +136,7 @@ class POI {
 
     // trigger control
     this._wasInside = false;
-    this.radius = .8;
+    this.radius = .8;  // distance from center to trigger
     this.cooldown = 0;  // seconds until we can pop again
   }
 
@@ -147,7 +150,7 @@ class POI {
     // rising edge trigger
     if (inside && !this._wasInside && this.cooldown <= 0) {
       this.building.pop();
-      this.cooldown = 0.5; // prevent machine-gunning the effect
+      this.cooldown = 5; // prevent machine-gunning the effect
     }
 
     this._wasInside = inside;
@@ -294,6 +297,7 @@ function createHUD() {
   );
   textAnim.pause();
   textAnim.currentTime = 0;
+  hudPresent = true;
 }
 
 
@@ -337,13 +341,55 @@ function hideHUD() {
   }
 }
 
+function destroyHUD() {
+  try { containerAnim?.cancel(); } catch {}
+  try { textAnim?.cancel(); } catch {}
+  containerAnim = null;
+  textAnim = null;
+
+  if (_hudClickBound && hudEl) {
+    hudEl.removeEventListener('click', togglePanelIfAny);
+    _hudClickBound = false;
+  }
+
+  const wrap = document.getElementById('poiHUDWrap');
+  if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+
+  hudEl = null;
+  hudLabelEl = null;
+  hudPresent = false;
+  wantOpen = false; // nothing to show while removed
+}
+
 function collapseContainer() {
   containerAnim.playbackRate = -1;
   containerAnim.play();
-  containerAnim.finished.then(() => {
-    disableHUDInteractions();
+  closeAnim.finished.then(() => {
+    panelEl.style.pointerEvents = 'none';
+
+    // remove the old HUD entirely
+    destroyHUD();
+
+    // recreate HUD fresh and replay the original appear sequence
+    createHUD();
+
+    // force the small pause until the container has expanded,
+    // then let showHUD() run the container + delayed text anims
+    const textToRestore = currentHUDText; // stash
+    requestAnimationFrame(() => {
+      // createHUD set up animations at time 0 and paused
+      // showHUD sets wantOpen=true and plays container, then fades text after
+      showHUD(textToRestore);
+    });
+
+    controlsEnabled = true; // unlock movement
   }).catch(() => {
-    disableHUDInteractions();
+    // same as success path
+    panelEl.style.pointerEvents = 'none';
+    destroyHUD();
+    createHUD();
+    requestAnimationFrame(() => showHUD(currentHUDText));
+    controlsEnabled = true;
   });
 }
 
@@ -371,18 +417,16 @@ function togglePanelIfAny() {
 function expandPanel() {
   if (panelOpen) return;
   panelOpen = true;
-  controlsEnabled = false; // lock movement
+  controlsEnabled = false;
 
-  // shrink the HUD and clear its text while panel is open
-  hudEl.classList.add('expanded', 'tiny');
-  currentHUDText = hudLabelEl.textContent;
-  hudLabelEl.textContent = '';
+  // capture current label text, then nuke the HUD
+  currentHUDText = hudLabelEl ? hudLabelEl.textContent : currentHUDText;
+  destroyHUD(); // removes the bottom block entirely
 
-  // make panel receptive
+  // make panel receptive and run curtain as you already do
   panelEl.style.opacity = '1';
   panelEl.style.pointerEvents = 'auto';
 
-  // Curtain open: height 0% -> 100% from the top, width constant
   if (panelCurtainAnim) panelCurtainAnim.cancel();
   panelCurtainAnim = panelEl.animate(
     [
@@ -393,7 +437,6 @@ function expandPanel() {
   );
 
   panelCurtainAnim.finished.then(() => {
-    // After the curtain, reveal header with the original label text
     titleChipEl.textContent = currentHUDText || '';
     headerEl.classList.add('visible');
     if (headerFadeAnim) headerFadeAnim.cancel();
@@ -434,15 +477,21 @@ function collapsePanel() {
 
   closeAnim.finished.then(() => {
     panelEl.style.pointerEvents = 'none';
-    // restore HUD text and spacing
-    hudEl.classList.remove('tiny');
-    hudLabelEl.textContent = currentHUDText;
-    controlsEnabled = true; // unlock movement
+
+    // fully rebuild the bottom HUD fresh
+    createHUD();
+
+    // replay original appear: container expand (Y then X), then text fade
+    const textToRestore = currentHUDText;
+    requestAnimationFrame(() => {
+      showHUD(textToRestore); // this already plays the container, then the delayed text animation
+    });
+
+    controlsEnabled = true;
   }).catch(() => {
-    // fail-safe restore
     panelEl.style.pointerEvents = 'none';
-    hudEl.classList.remove('tiny');
-    hudLabelEl.textContent = currentHUDText;
+    createHUD();
+    requestAnimationFrame(() => showHUD(currentHUDText));
     controlsEnabled = true;
   });
 }
@@ -489,10 +538,9 @@ const showThreshold = 0.8;
 const hideThreshold = 1.0;
 
 function updateHUD(trainX) {
-  if (!containerAnim || !textAnim) return;
-
-  // Freeze HUD state while panel is open
-  if (panelOpen) return;
+    if (!containerAnim || !textAnim) return;
+    if (!hudPresent) return;  // nothing to update if HUD is removed
+    if (panelOpen || performance.now() < hudRestoreUntil) return;
 
   let closest = null, closestDist = Infinity;
   for (const poi of poiList) {
