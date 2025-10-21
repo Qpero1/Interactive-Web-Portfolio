@@ -9,11 +9,24 @@ const groundDepth = 50;
 const groundWidth = 50;
 let poiList = [];
 
+let controlsEnabled = true;     // lock/unlock player input
+let currentHUDText = '';        // stores the label text while panel is open
+let hudRestoreUntil = 0;        // ms timestamp; while in future, HUD updates are ignored
+let hudPresent = false;   // do we currently have a bottom HUD in the DOM?
+
+
+// panel animation handles
+let panelCurtainAnim = null;
+let headerFadeAnim  = null;
+
+// header elements
+let headerEl, titleChipEl, closeFloatBtn;
+
 // ---------------- SETUP ----------------
 function init() {
   // Scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x87ceeb); // sky blue
+  scene.background = new THREE.Color(0xF0EAD6); // white with light tan: 0xF0EAD6
 
   // Camera (slightly tilted top-down)
   camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
@@ -34,17 +47,17 @@ function init() {
   // Ground
   ground = new THREE.Mesh(
     new THREE.PlaneGeometry(groundWidth, groundDepth),
-    new THREE.MeshLambertMaterial({ color: 0xffd24d })
+    new THREE.MeshLambertMaterial({ color: 0xFFF1A9 }) // light tan
   );
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
 
   // Create your train instance
-  train = new Train(0xff0000);
+  train = new Train(0xE55934);
 
   // Create some POIs
   const firstStop = new POI(10, "First Stop");
-  const secondStop = new POI(0, "Second Stop");
+  const secondStop = new POI(-10, "Second Stop");
   
   // Add to POI list
   poiList.push(firstStop);
@@ -62,6 +75,7 @@ function init() {
   addEventListener('keyup', e => keys[e.code] = false);
 
   createHUD();
+  createInfoPanel();
   animate();
 }
 
@@ -82,29 +96,29 @@ class Train {
   }
 
   update(dt) {
-    // Input: -1, 0, or +1
     const left  = keys.KeyA || keys.ArrowLeft  ? 1 : 0;
     const right = keys.KeyD || keys.ArrowRight ? 1 : 0;
     const input = right - left;
 
-    if (input !== 0) {
-      // If input is opposite the current motion, apply stronger braking
-      const acceleratingAgainstMotion = Math.sign(this.v) !== 0 && Math.sign(input) !== Math.sign(this.v);
-      const a = acceleratingAgainstMotion ? this.brakeAccel : this.accel;
-      this.v += input * a * dt;
+    if (!controlsEnabled) {
+      // Ignore input and brake to a stop smoothly
+      this.v = approach(this.v, 0, (this.brakeAccel + this.coastDecel) * dt);
     } else {
-      // No input: coast toward zero at a fixed decel rate
-      this.v = approach(this.v, 0, this.coastDecel * dt);
+      if (input !== 0) {
+        const acceleratingAgainstMotion =
+          Math.sign(this.v) !== 0 && Math.sign(input) !== Math.sign(this.v);
+        const a = acceleratingAgainstMotion ? this.brakeAccel : this.accel;
+        this.v += input * a * dt;
+      } else {
+        this.v = approach(this.v, 0, this.coastDecel * dt);
+      }
     }
 
-    // Clamp speed
     this.v = clamp(this.v, -this.maxSpeed, this.maxSpeed);
-
-    // Integrate position
     this.mesh.position.x += this.v * dt;
+
     if (this.mesh.position.x > groundWidth / 2) this.mesh.position.x = -groundWidth / 2;
-    if (this.mesh.position.x < -groundWidth / 2) this.mesh.position.x = groundWidth / 2;
-  
+    if (this.mesh.position.x < -groundWidth / 2) this.mesh.position.x =  groundWidth / 2;
   }
 }
 
@@ -117,12 +131,12 @@ class POI {
     this.name = name;
 
     // attach a building and remember it
-    this.building = new Building(trackX, -5, 3, 3, 5, 0x8B4513);
+    this.building = new Building(trackX, -5, 3, 3, 5, 0x93C0A4);
     scene.add(this.building.mesh);
 
     // trigger control
     this._wasInside = false;
-    this.radius = .8;
+    this.radius = .8;  // distance from center to trigger
     this.cooldown = 0;  // seconds until we can pop again
   }
 
@@ -136,7 +150,7 @@ class POI {
     // rising edge trigger
     if (inside && !this._wasInside && this.cooldown <= 0) {
       this.building.pop();
-      this.cooldown = 0.5; // prevent machine-gunning the effect
+      this.cooldown = 5; // prevent machine-gunning the effect
     }
 
     this._wasInside = inside;
@@ -234,45 +248,337 @@ function onResize() {
 }
 
 // --- HUD: one bottom banner ---
-let hudEl;
+let hudEl, hudLabelEl;
+let containerAnim, textAnim;
+let wantOpen = false;     // target state
+let textVisible = false;  // whether text has finished fading in
+
+
 
 function createHUD() {
+  // wrapper for hover lift
+  const wrap = document.createElement('div');
+  wrap.id = 'poiHUDWrap';
+  document.body.appendChild(wrap);
+
+  // actual HUD
   hudEl = document.createElement('div');
   hudEl.id = 'poiHUD';
-  document.body.appendChild(hudEl);
+
+  hudLabelEl = document.createElement('span');
+  hudLabelEl.className = 'hud-text';
+  hudEl.appendChild(hudLabelEl);
+
+  wrap.appendChild(hudEl);
+
+  // === INIT WAAPI ANIMATIONS HERE ===
+  const revealMs = ms(getCSS('--reveal-dur')) || 600;
+  const textMs   = ms(getCSS('--text-dur'))   || 350;
+
+  // Container: expand Y (0->50%) then X (50%->100%)
+  containerAnim = hudEl.animate(
+    [
+      { transform: 'scaleY(0) scaleX(0.1)', opacity: 0, offset: 0,    composite: 'replace' },
+      { transform: 'scaleY(1) scaleX(0.1)', opacity: 1, offset: 0.5, composite: 'replace' },
+      { transform: 'scaleY(1) scaleX(1.0)', opacity: 1, offset: 1,   composite: 'replace' }
+    ],
+    { duration: revealMs, easing: 'ease-out', fill: 'both' }
+  );
+  containerAnim.pause();
+  containerAnim.currentTime = 0;
+
+  // Text: fade/blur
+  textAnim = hudLabelEl.animate(
+    [
+      { opacity: 0, filter: 'blur(2px)' },
+      { opacity: 1, filter: 'blur(0)' }
+    ],
+    { duration: textMs, easing: 'ease', fill: 'both' }
+  );
+  textAnim.pause();
+  textAnim.currentTime = 0;
+  hudPresent = true;
 }
 
+
+function showHUD(text) {
+  wantOpen = true;                     // <-- set target state
+  hudLabelEl.textContent = text;
+
+  // open container from current progress
+  containerAnim.playbackRate = 1;
+  containerAnim.play();
+
+  containerAnim.finished.then(() => {
+    if (!wantOpen) return;             // user left during open
+    if (textAnim.playbackRate < 0 || textAnim.currentTime === 0) {
+      textAnim.playbackRate = 1;
+      textAnim.play();
+      textAnim.finished.catch(() => {});
+    }
+    // update panel content (so click uses fresh text)
+    panelContentEl.innerHTML = `
+      <h3 style="margin:0 0 8px 0;font-size:18px;font-weight:600;">${text}</h3>
+      <p style="margin:0;opacity:.9;">Info about ${text} goes here.</p>
+    `;
+    enableHUDInteractions();
+  }).catch(() => {});
+}
+
+function hideHUD() {
+  if (!wantOpen) return;               // already targeting closed
+  wantOpen = false;                    // <-- set target state
+
+  if (panelOpen) collapsePanel();
+
+  // reverse text from wherever it is
+  if (textAnim.currentTime > 0) {
+    textAnim.playbackRate = -1;
+    textAnim.play();
+    textAnim.finished.then(() => collapseContainer()).catch(() => collapseContainer());
+  } else {
+    collapseContainer();
+  }
+}
+
+function destroyHUD() {
+  try { containerAnim?.cancel(); } catch {}
+  try { textAnim?.cancel(); } catch {}
+  containerAnim = null;
+  textAnim = null;
+
+  if (_hudClickBound && hudEl) {
+    hudEl.removeEventListener('click', togglePanelIfAny);
+    _hudClickBound = false;
+  }
+
+  const wrap = document.getElementById('poiHUDWrap');
+  if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+
+  hudEl = null;
+  hudLabelEl = null;
+  hudPresent = false;
+  wantOpen = false; // nothing to show while removed
+}
+
+function collapseContainer() {
+  containerAnim.playbackRate = -1;
+  containerAnim.play();
+  closeAnim.finished.then(() => {
+    panelEl.style.pointerEvents = 'none';
+
+    // remove the old HUD entirely
+    destroyHUD();
+
+    // recreate HUD fresh and replay the original appear sequence
+    createHUD();
+
+    // force the small pause until the container has expanded,
+    // then let showHUD() run the container + delayed text anims
+    const textToRestore = currentHUDText; // stash
+    requestAnimationFrame(() => {
+      // createHUD set up animations at time 0 and paused
+      // showHUD sets wantOpen=true and plays container, then fades text after
+      showHUD(textToRestore);
+    });
+
+    controlsEnabled = true; // unlock movement
+  }).catch(() => {
+    // same as success path
+    panelEl.style.pointerEvents = 'none';
+    destroyHUD();
+    createHUD();
+    requestAnimationFrame(() => showHUD(currentHUDText));
+    controlsEnabled = true;
+  });
+}
+
+let _hudClickBound = false;
+
+function enableHUDInteractions() {
+  document.getElementById('poiHUDWrap')?.classList.add('interactive');
+  if (!_hudClickBound) {
+    hudEl.addEventListener('click', togglePanelIfAny);
+    _hudClickBound = true;
+  }
+}
+function disableHUDInteractions() {
+  document.getElementById('poiHUDWrap')?.classList.remove('interactive');
+  if (_hudClickBound) {
+    hudEl.removeEventListener('click', togglePanelIfAny);
+    _hudClickBound = false;
+  }
+}
+
+function togglePanelIfAny() {
+  if (panelOpen) collapsePanel(); else expandPanel();
+}
+
+function expandPanel() {
+  if (panelOpen) return;
+  panelOpen = true;
+  controlsEnabled = false;
+
+  // capture current label text, then nuke the HUD
+  currentHUDText = hudLabelEl ? hudLabelEl.textContent : currentHUDText;
+  destroyHUD(); // removes the bottom block entirely
+
+  // make panel receptive and run curtain as you already do
+  panelEl.style.opacity = '1';
+  panelEl.style.pointerEvents = 'auto';
+
+  if (panelCurtainAnim) panelCurtainAnim.cancel();
+  panelCurtainAnim = panelEl.animate(
+    [
+      { clipPath: 'inset(0 0 100% 0)', opacity: 1 },
+      { clipPath: 'inset(0 0   0% 0)', opacity: 1 }
+    ],
+    { duration: 420, easing: 'cubic-bezier(.22,.9,.24,1)', fill: 'both' }
+  );
+
+  panelCurtainAnim.finished.then(() => {
+    titleChipEl.textContent = currentHUDText || '';
+    headerEl.classList.add('visible');
+    if (headerFadeAnim) headerFadeAnim.cancel();
+    headerFadeAnim = headerEl.animate(
+      [
+        { opacity: 0, transform: 'translateX(-50%) translateY(-6px)' },
+        { opacity: 1, transform: 'translateX(-50%) translateY(0)' }
+      ],
+      { duration: 180, easing: 'ease-out', fill: 'both' }
+    );
+  }).catch(() => {});
+}
+
+function collapsePanel() {
+  if (!panelOpen) return;
+  panelOpen = false;
+
+  // Hide header first
+  headerEl.classList.remove('visible');
+  if (headerFadeAnim) headerFadeAnim.cancel();
+  headerFadeAnim = headerEl.animate(
+    [
+      { opacity: 1, transform: 'translateX(-50%) translateY(0)' },
+      { opacity: 0, transform: 'translateX(-50%) translateY(-6px)' }
+    ],
+    { duration: 120, easing: 'ease-in', fill: 'forwards' }
+  );
+
+  // Curtain close: 100% -> 0% height
+  if (panelCurtainAnim) panelCurtainAnim.cancel();
+  const closeAnim = panelEl.animate(
+    [
+      { clipPath: 'inset(0 0   0% 0)', opacity: 1 },
+      { clipPath: 'inset(0 0 100% 0)', opacity: 1 }
+    ],
+    { duration: 260, easing: 'ease-in', fill: 'forwards' }
+  );
+
+  closeAnim.finished.then(() => {
+    panelEl.style.pointerEvents = 'none';
+
+    // fully rebuild the bottom HUD fresh
+    createHUD();
+
+    // replay original appear: container expand (Y then X), then text fade
+    const textToRestore = currentHUDText;
+    requestAnimationFrame(() => {
+      showHUD(textToRestore); // this already plays the container, then the delayed text animation
+    });
+
+    controlsEnabled = true;
+  }).catch(() => {
+    panelEl.style.pointerEvents = 'none';
+    createHUD();
+    requestAnimationFrame(() => showHUD(currentHUDText));
+    controlsEnabled = true;
+  });
+}
+
+
+// -- INFO PANEL --
+let panelEl, panelContentEl, panelOpen = false;
+
+function createInfoPanel() {
+  // Panel body
+  panelEl = document.createElement('div');
+  panelEl.id = 'poiPanel';
+  panelContentEl = document.createElement('div');
+  panelContentEl.className = 'panel-content';
+  panelEl.appendChild(panelContentEl);
+  document.body.appendChild(panelEl);
+
+  // Floating header wrapper (fixed, above panel)
+  headerEl = document.createElement('div');
+  headerEl.id = 'poiPanelHeader';
+
+  // Title chip (left)
+  titleChipEl = document.createElement('div');
+  titleChipEl.className = 'title-chip';
+  headerEl.appendChild(titleChipEl);
+
+  // Close button (right)
+  closeFloatBtn = document.createElement('button');
+  closeFloatBtn.className = 'close-btn';
+  closeFloatBtn.textContent = '✕';
+  closeFloatBtn.addEventListener('click', () => collapsePanel());
+  headerEl.appendChild(closeFloatBtn);
+
+  document.body.appendChild(headerEl);
+
+  // Esc closes panel
+  addEventListener('keydown', e => {
+    if (e.key === 'Escape' && panelOpen) collapsePanel();
+  });
+}
+
+// update HUD based on train position
+const showThreshold = 0.8;
+const hideThreshold = 1.0;
+
 function updateHUD(trainX) {
-  let closest = null;
-  let closestDist = Infinity;
+    if (!containerAnim || !textAnim) return;
+    if (!hudPresent) return;  // nothing to update if HUD is removed
+    if (panelOpen || performance.now() < hudRestoreUntil) return;
+
+  let closest = null, closestDist = Infinity;
   for (const poi of poiList) {
     const d = Math.abs(poi.mesh.position.x - trainX);
     if (d < closestDist) { closestDist = d; closest = poi; }
   }
 
-  const threshold = 2.5;
-  if (closestDist < threshold) {
-    hudEl.textContent = closest.name;
-    hudEl.classList.add('visible');
+  if (!closest) { if (wantOpen) hideHUD(); return; }
 
-  } else {
-    hudEl.classList.remove('visible');
+  if (!wantOpen && closestDist < showThreshold) {
+    showHUD(closest.name);
+  } else if (wantOpen) {
+    if (closestDist > hideThreshold) hideHUD();
+    else if (closest.name !== hudLabelEl.textContent) showHUD(closest.name);
   }
 }
 
-
-// start
+// start //
 init();
 
 
-// Helpers
+// Helpers //
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+// for smooth value approach (to avoid overshoot)
 function approach(value, target, delta) {
   // move value toward target by up to delta, without overshoot
   if (value < target) return Math.min(value + delta, target);
   if (value > target) return Math.max(value - delta, target);
   return value;
+}
+
+// for hud timing
+function getCSS(varName) { return getComputedStyle(document.documentElement).getPropertyValue(varName); }
+function ms(str) {
+  const t = String(str).trim();
+  if (!t) return 0;
+  return t.endsWith('ms') ? parseFloat(t) : parseFloat(t) * 1000;
 }
