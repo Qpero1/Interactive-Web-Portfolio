@@ -1,21 +1,116 @@
-#poiHUD {
+:root {
+  --reveal-dur: 600ms;
+  --text-dur: 350ms;
+}
+
+/* wrapper at bottom center for hover lift; HUD sits inside */
+#poiHUDWrap {
   position: fixed;
   left: 50%;
   bottom: 20px;
-  transform: translateX(-50%);
-  padding: 8px 14px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.65);
-  color: white;
-  font-family: system-ui, sans-serif;
-  font-size: 14px;
-  letter-spacing: 0.3px;
-  opacity: 0;
-  transition: opacity 180ms ease;
-  pointer-events: none;
+  transform: translateX(-50%);  /* only x-translate here */
   z-index: 9999;
+  pointer-events: none;          /* enabled when interactive */
 }
 
-#poiHUD.visible {
-  opacity: 1;
+/* hover lift on wrapper, not on the animated HUD */
+#poiHUDWrap.interactive {
+  pointer-events: auto;
+  cursor: pointer;
 }
+#poiHUDWrap.interactive:hover {
+  transform: translateX(-50%) translateY(-4px);
+  transition: transform 160ms ease;
+}
+
+/* actual HUD (animated by WAAPI for open/close) */
+#poiHUD {
+  transform-origin: center bottom;
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: rgba(25, 25, 25, 0.75);
+  color: #fff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-weight: 500;
+  font-size: 16px;
+  letter-spacing: 0.4px;
+  text-shadow: 0 2px 5px rgba(0,0,0,0.8);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+  backdrop-filter: blur(6px);
+  overflow: hidden;
+}
+
+/* label default position (bottom HUD) */
+#poiHUD .hud-text {
+  display: inline-block;
+  opacity: 0; /* WAAPI fades this in */
+}
+
+/* expanded: move label to about 1/3 from top of screen */
+#poiHUD.expanded .hud-text {
+  position: fixed;
+  left: 50%;
+  top: calc(33vh - 20px); /* nudge as needed */
+  transform: translateX(-50%);
+  transition: top 220ms ease, transform 220ms ease, opacity 200ms ease;
+  z-index: 10001;
+}
+
+/* info panel: middle third, ~50% width */
+#poiPanel {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%) scaleY(0.9);
+  transform-origin: top center;
+
+  top: calc(33vh + 14px); /* a bit below the label row */
+  bottom: 33vh;
+
+  width: min(50vw, 700px);
+  border-radius: 12px;
+  background: rgba(25,25,25,0.78);
+  color: #fff;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  z-index: 10000;
+  pointer-events: none;
+  overflow: hidden;
+}
+#poiPanel.open {
+  opacity: 1;
+  transform: translateX(-50%) scaleY(1);
+  transition: opacity 200ms ease, transform 240ms ease;
+  pointer-events: auto;
+}
+
+/* panel content */
+#poiPanel .panel-content {
+  padding: 16px 18px 18px;
+  height: 100%;
+  overflow: auto;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  line-height: 1.35;
+}
+
+/* small 1x1 close button aligned to label row at panel top-right */
+#poiPanel .close-btn {
+  position: absolute;
+  top: -28px;   /* same row as label above */
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(35,35,35,0.9);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+  user-select: none;
+  transition: transform 120ms ease, background 120ms ease;
+}
+#poiPanel .close-btn:hover { transform: translateY(-2px); background: rgba(45,45,45,0.95); }
+#poiPanel .close-btn:active { transform: translateY(0); }
