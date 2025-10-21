@@ -9,6 +9,16 @@ const groundDepth = 50;
 const groundWidth = 50;
 let poiList = [];
 
+let controlsEnabled = true;     // lock/unlock player input
+let currentHUDText = '';        // stores the label text while panel is open
+
+// panel animation handles
+let panelCurtainAnim = null;
+let headerFadeAnim  = null;
+
+// header elements
+let headerEl, titleChipEl, closeFloatBtn;
+
 // ---------------- SETUP ----------------
 function init() {
   // Scene
@@ -83,29 +93,29 @@ class Train {
   }
 
   update(dt) {
-    // Input: -1, 0, or +1
     const left  = keys.KeyA || keys.ArrowLeft  ? 1 : 0;
     const right = keys.KeyD || keys.ArrowRight ? 1 : 0;
     const input = right - left;
 
-    if (input !== 0) {
-      // If input is opposite the current motion, apply stronger braking
-      const acceleratingAgainstMotion = Math.sign(this.v) !== 0 && Math.sign(input) !== Math.sign(this.v);
-      const a = acceleratingAgainstMotion ? this.brakeAccel : this.accel;
-      this.v += input * a * dt;
+    if (!controlsEnabled) {
+      // Ignore input and brake to a stop smoothly
+      this.v = approach(this.v, 0, (this.brakeAccel + this.coastDecel) * dt);
     } else {
-      // No input: coast toward zero at a fixed decel rate
-      this.v = approach(this.v, 0, this.coastDecel * dt);
+      if (input !== 0) {
+        const acceleratingAgainstMotion =
+          Math.sign(this.v) !== 0 && Math.sign(input) !== Math.sign(this.v);
+        const a = acceleratingAgainstMotion ? this.brakeAccel : this.accel;
+        this.v += input * a * dt;
+      } else {
+        this.v = approach(this.v, 0, this.coastDecel * dt);
+      }
     }
 
-    // Clamp speed
     this.v = clamp(this.v, -this.maxSpeed, this.maxSpeed);
-
-    // Integrate position
     this.mesh.position.x += this.v * dt;
+
     if (this.mesh.position.x > groundWidth / 2) this.mesh.position.x = -groundWidth / 2;
-    if (this.mesh.position.x < -groundWidth / 2) this.mesh.position.x = groundWidth / 2;
-  
+    if (this.mesh.position.x < -groundWidth / 2) this.mesh.position.x =  groundWidth / 2;
   }
 }
 
@@ -359,14 +369,82 @@ function togglePanelIfAny() {
 }
 
 function expandPanel() {
-  hudEl.classList.add('expanded');
-  panelEl.classList.add('open');
+  if (panelOpen) return;
   panelOpen = true;
+  controlsEnabled = false; // lock movement
+
+  // shrink the HUD and clear its text while panel is open
+  hudEl.classList.add('expanded', 'tiny');
+  currentHUDText = hudLabelEl.textContent;
+  hudLabelEl.textContent = '';
+
+  // make panel receptive
+  panelEl.style.opacity = '1';
+  panelEl.style.pointerEvents = 'auto';
+
+  // Curtain open: height 0% -> 100% from the top, width constant
+  if (panelCurtainAnim) panelCurtainAnim.cancel();
+  panelCurtainAnim = panelEl.animate(
+    [
+      { clipPath: 'inset(0 0 100% 0)', opacity: 1 },
+      { clipPath: 'inset(0 0   0% 0)', opacity: 1 }
+    ],
+    { duration: 420, easing: 'cubic-bezier(.22,.9,.24,1)', fill: 'both' }
+  );
+
+  panelCurtainAnim.finished.then(() => {
+    // After the curtain, reveal header with the original label text
+    titleChipEl.textContent = currentHUDText || '';
+    headerEl.classList.add('visible');
+    if (headerFadeAnim) headerFadeAnim.cancel();
+    headerFadeAnim = headerEl.animate(
+      [
+        { opacity: 0, transform: 'translateX(-50%) translateY(-6px)' },
+        { opacity: 1, transform: 'translateX(-50%) translateY(0)' }
+      ],
+      { duration: 180, easing: 'ease-out', fill: 'both' }
+    );
+  }).catch(() => {});
 }
+
 function collapsePanel() {
-  panelEl.classList.remove('open');
-  hudEl.classList.remove('expanded');
+  if (!panelOpen) return;
   panelOpen = false;
+
+  // Hide header first
+  headerEl.classList.remove('visible');
+  if (headerFadeAnim) headerFadeAnim.cancel();
+  headerFadeAnim = headerEl.animate(
+    [
+      { opacity: 1, transform: 'translateX(-50%) translateY(0)' },
+      { opacity: 0, transform: 'translateX(-50%) translateY(-6px)' }
+    ],
+    { duration: 120, easing: 'ease-in', fill: 'forwards' }
+  );
+
+  // Curtain close: 100% -> 0% height
+  if (panelCurtainAnim) panelCurtainAnim.cancel();
+  const closeAnim = panelEl.animate(
+    [
+      { clipPath: 'inset(0 0   0% 0)', opacity: 1 },
+      { clipPath: 'inset(0 0 100% 0)', opacity: 1 }
+    ],
+    { duration: 260, easing: 'ease-in', fill: 'forwards' }
+  );
+
+  closeAnim.finished.then(() => {
+    panelEl.style.pointerEvents = 'none';
+    // restore HUD text and spacing
+    hudEl.classList.remove('tiny');
+    hudLabelEl.textContent = currentHUDText;
+    controlsEnabled = true; // unlock movement
+  }).catch(() => {
+    // fail-safe restore
+    panelEl.style.pointerEvents = 'none';
+    hudEl.classList.remove('tiny');
+    hudLabelEl.textContent = currentHUDText;
+    controlsEnabled = true;
+  });
 }
 
 
@@ -374,22 +452,33 @@ function collapsePanel() {
 let panelEl, panelContentEl, panelOpen = false;
 
 function createInfoPanel() {
+  // Panel body
   panelEl = document.createElement('div');
   panelEl.id = 'poiPanel';
-
-  const closeBtn = document.createElement('div');
-  closeBtn.className = 'close-btn';
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', () => collapsePanel());
-
   panelContentEl = document.createElement('div');
   panelContentEl.className = 'panel-content';
-
-  panelEl.appendChild(closeBtn);
   panelEl.appendChild(panelContentEl);
   document.body.appendChild(panelEl);
 
-  // optional: Esc closes panel
+  // Floating header wrapper (fixed, above panel)
+  headerEl = document.createElement('div');
+  headerEl.id = 'poiPanelHeader';
+
+  // Title chip (left)
+  titleChipEl = document.createElement('div');
+  titleChipEl.className = 'title-chip';
+  headerEl.appendChild(titleChipEl);
+
+  // Close button (right)
+  closeFloatBtn = document.createElement('button');
+  closeFloatBtn.className = 'close-btn';
+  closeFloatBtn.textContent = '✕';
+  closeFloatBtn.addEventListener('click', () => collapsePanel());
+  headerEl.appendChild(closeFloatBtn);
+
+  document.body.appendChild(headerEl);
+
+  // Esc closes panel
   addEventListener('keydown', e => {
     if (e.key === 'Escape' && panelOpen) collapsePanel();
   });
@@ -400,7 +489,10 @@ const showThreshold = 0.8;
 const hideThreshold = 1.0;
 
 function updateHUD(trainX) {
-  if (!containerAnim || !textAnim) return; // animations not ready yet
+  if (!containerAnim || !textAnim) return;
+
+  // Freeze HUD state while panel is open
+  if (panelOpen) return;
 
   let closest = null, closestDist = Infinity;
   for (const poi of poiList) {
@@ -417,7 +509,6 @@ function updateHUD(trainX) {
     else if (closest.name !== hudLabelEl.textContent) showHUD(closest.name);
   }
 }
-
 
 // start //
 init();

@@ -40,49 +40,6 @@
   overflow: hidden;
 }
 
-/* label default position (bottom HUD) */
-#poiHUD .hud-text {
-  display: inline-block;
-  opacity: 0; /* WAAPI fades this in */
-}
-
-/* expanded: move label to about 1/3 from top of screen */
-#poiHUD.expanded .hud-text {
-  position: fixed;
-  left: 50%;
-  top: calc(33vh - 20px); /* nudge as needed */
-  transform: translateX(-50%);
-  transition: top 220ms ease, transform 220ms ease, opacity 200ms ease;
-  z-index: 10001;
-}
-
-/* info panel: middle third, ~50% width */
-#poiPanel {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%) scaleY(0.9);
-  transform-origin: top center;
-
-  top: calc(33vh + 14px); /* a bit below the label row */
-  bottom: 33vh;
-
-  width: min(50vw, 700px);
-  border-radius: 12px;
-  background: rgba(25,25,25,0.78);
-  color: #fff;
-  box-shadow: 0 12px 32px rgba(0,0,0,0.35);
-  backdrop-filter: blur(8px);
-  opacity: 0;
-  z-index: 10000;
-  pointer-events: none;
-  overflow: hidden;
-}
-#poiPanel.open {
-  opacity: 1;
-  transform: translateX(-50%) scaleY(1);
-  transition: opacity 200ms ease, transform 240ms ease;
-  pointer-events: auto;
-}
 
 /* panel content */
 #poiPanel .panel-content {
@@ -93,15 +50,76 @@
   line-height: 1.35;
 }
 
-/* small 1x1 close button aligned to label row at panel top-right */
-#poiPanel .close-btn {
-  position: absolute;
-  top: -28px;   /* same row as label above */
-  right: 10px;
+
+/* Panel starts "closed" by clipping its height. JS animates clip-path. */
+#poiPanel {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  transform-origin: top center;
+
+  top: calc(33vh + 14px);
+  bottom: 33vh;
+
+  width: min(50vw, 700px);
+  border-radius: 12px;
+  background: rgba(25,25,25,0.78);
+  color: #fff;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+  backdrop-filter: blur(8px);
+  opacity: 1;                 /* JS controls visibility via header + clip-path */
+  z-index: 10000;
+  pointer-events: none;
+  overflow: hidden;
+
+  /* Curtain starts fully closed */
+  clip-path: inset(0 0 100% 0);
+}
+
+/* Floating header that sits above the panel */
+#poiPanelHeader {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(33vh - 36px);
+  width: min(50vw, 700px);
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 10px;
+  z-index: 10002;
+  opacity: 0;
+  pointer-events: none; /* children enable their own events */
+}
+
+#poiPanelHeader.visible {
+  opacity: 1;
+}
+
+/* Title chip (locks to the left of the panel) */
+#poiPanelHeader .title-chip {
+  pointer-events: none;
+  background: rgba(35,35,35,0.92);
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.3px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+}
+
+/* Close button (its own floating element) */
+#poiPanelHeader .close-btn {
+  pointer-events: auto;
   width: 28px;
   height: 28px;
+  border: none;
   border-radius: 6px;
-  background: rgba(35,35,35,0.9);
+  background: rgba(35,35,35,0.92);
   color: #fff;
   display: grid;
   place-items: center;
@@ -109,8 +127,18 @@
   line-height: 1;
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0,0,0,0.3);
-  user-select: none;
   transition: transform 120ms ease, background 120ms ease;
 }
-#poiPanel .close-btn:hover { transform: translateY(-2px); background: rgba(45,45,45,0.95); }
-#poiPanel .close-btn:active { transform: translateY(0); }
+#poiPanelHeader .close-btn:hover { transform: translateY(-2px); background: rgba(45,45,45,0.95); }
+#poiPanelHeader .close-btn:active { transform: translateY(0); }
+
+/* Keep label at bottom, but make it shrink while panel is open */
+#poiHUD.tiny {
+  padding: 6px 12px;
+}
+
+#poiPanelHeader {
+  will-change: transform, opacity;
+}
+
+
